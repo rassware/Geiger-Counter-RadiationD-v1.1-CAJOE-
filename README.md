@@ -1,13 +1,33 @@
-# Geiger Counter
+# ArduinoGeigerCounter
 
-RadiationD gieger counter arduino serial port code .ino
+## Description
 
-the project i forked from was linked to by the manufacturer (why?) but the only thing that was relevant was the interrupt of the pin that the geiger counter was connected to.
+Arduino code for use with RadiationD-v1.1 (CAJOE) Geiger counter board.
 
-I added cursory click per minute averages. they're garbage. if you get a ton of clicks for a few seconds your clicks per minute may only go up by 1, depending on how long this runs.
+This repo is a fork from Andreas Spiess´ repo. I added some improvements to the code:
 
-I will fix it later, i just wanted some way to see the clicks on a serial console, and this does that, as it prints the total clicks since the arduino started, as well as the overall average (as in, total clicks divided by total minutes)
+* rewrite the sketch for a ESP8266
+* calculates now the micro sievert per hour
+* don´t rely on 3rd party libs for the IFTTT communication
 
-I know that the cheap-o amazon and ebay geiger counters have much smaller averaging windows, but i don't have a display that will work with an arduino micro yet, so i don't have any inclination to fix this to have better math or averaging yet. 
+Source for the micro sievert factor:
+[www.cooking-hacks.com](https://www.cooking-hacks.com/documentation/tutorials/geiger-counter-radiation-sensor-board-arduino-raspberry-pi-tutorial#tube)
 
-take this (specifically the .ino) as a way to start your own exploration into hardware interrupts and using pulses to count something. because that's all i did.
+You can debug the IFTTT connection by comment in following line:
+```
+#define IFTTT_WEBHOOK_DEBUG
+```
+
+From time to time the fingerprint for the IFTTT communication changes. To get the new fingerprint simply
+execute in a bash:
+```bash
+openssl s_client -connect maker.ifttt.com:443  < /dev/null 2>/dev/null | openssl x509 -fingerprint -noout | cut -d'=' -f2
+```
+
+## Contact info
+
+Christian Raßmann
+
+rc@rassware.de
+
+@rassware
