@@ -14,12 +14,14 @@
 */
 
 #include <ESP8266WiFi.h>
-#include <IFTTTWebhook.h>
 #include <ESP8266HTTPClient.h>
+#include <credentials.h> // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
 #define LOG_PERIOD 20000 //Logging period in milliseconds
 #define MINUTE_PERIOD 60000
 #define TUBE_FACTOR_SIEVERT 0.00812037037037
+
+#ifndef CREDENTIALS
 
 // WLAN
 #define mySSID "xxx"
@@ -31,6 +33,9 @@
 
 // IFTTT
 #define IFTTT_KEY "xxx"
+
+#endif
+
 #define EVENT_NAME "Radioactivity"
 // fingerprint: openssl s_client -connect maker.ifttt.com:443  < /dev/null 2>/dev/null | openssl x509 -fingerprint -noout | cut -d'=' -f2
 #define DEFAULT_IFTTT_FINGERPRINT "AA:75:CB:41:2E:D5:F9:97:FF:5D:A0:8B:7D:AC:12:21:08:4B:00:8C"
