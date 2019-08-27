@@ -19,6 +19,7 @@
 #include <credentials.h> // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
 #define LOG_PERIOD 60000 //Logging period in milliseconds
+#define BT_LOG_PERIOD 1000 //Bluetooth logging period in milliseconds
 #define MINUTE_PERIOD 60000
 #define TUBE_FACTOR_SIEVERT 0.00812037037037
 
@@ -50,19 +51,39 @@
 const int channelID = THINKSPEAK_CHANNEL;
 const char* server = "api.thingspeak.com";
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint8_t temprature_sens_read();
+#ifdef __cplusplus
+}
+#endif
+
+uint8_t temprature_sens_read();
+
 WiFiClient client;
 BluetoothSerial SerialBT;
 
 volatile unsigned long counts = 0;                       // Tube events
+const int LED_BUILTIN = 2;                               // status LED
+const int input_pin_geiger = 18;                         // input pin for geiger board
 unsigned long cpm = 0;                                   // CPM
 float mSvh = 0.0f;                                       // Micro Sievert
 unsigned long previousMillis;                            // Time measurement
+unsigned long previousBTMillis;                          // Time measurement for bluetooth
+unsigned long isrMillis;                                 // Time measurement for last ISR
 int wifi_counter = 0;                                    // WiFi connection attempts
-int LED_BUILTIN = 2;                                     // status LED
-int input_pin_geiger = 23;                               // input pin for geiger board
+uint8_t temprature_sens_read();                          // internal temperature sensor
+int hall_value = 0;                                      // internal hall sensor
+bool isrFired = false;                                   // flag for ISR
 
-ICACHE_RAM_ATTR void isr_impulse() { // Captures count of events from Geiger counter board
+void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
+  detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
+  isrMillis = millis();
+  isrFired = true;
   counts++;
+  unsigned long wait = millis() + 100;
+  while (wait > millis()) {}
 }
 
 void setup() {
@@ -107,6 +128,7 @@ void loop() {
   unsigned long currentMillis = millis();
 
   if (WiFi.status() != WL_CONNECTED) {
+    digitalWrite(LED_BUILTIN, HIGH);
     WiFi.begin(mySSID, myPASSWORD);
     wifi_counter = 0;
     while (WiFi.status() != WL_CONNECTED) {
@@ -117,6 +139,20 @@ void loop() {
         ESP.restart();
       }
     }
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+
+  if (currentMillis - previousBTMillis > BT_LOG_PERIOD) {
+    previousBTMillis = currentMillis;
+    SerialBT.print("Counts: ");
+    SerialBT.println(counts);
+  }
+
+  if (isrFired) {
+    if (( millis() - isrMillis) >= 100  ) {
+      attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
+      isrFired = false;
+    }
   }
 
   if (currentMillis - previousMillis > LOG_PERIOD) {
@@ -126,6 +162,8 @@ void loop() {
     mSvh = cpm * TUBE_FACTOR_SIEVERT;
     counts = 0;
     postThinspeak(cpm, mSvh);
+    getTemperature();
+    getHallValue();
     if (cpm > 200 ) IFTTT(cpm, mSvh);
     digitalWrite(LED_BUILTIN, LOW);
   }
@@ -167,6 +205,22 @@ void postThinspeak(int postValue, float postValue2) {
     SerialBT.println(line);
   }
   client.stop();
+}
+
+void getTemperature() {
+  // Convert raw temperature in F to Celsius degrees
+  uint8_t temp = (temprature_sens_read() - 32) / 1.8;
+  Serial.print("Temp in Celsius: ");
+  Serial.println(temp);
+  SerialBT.print("Temp in Celsius: ");
+  SerialBT.println(temp);
+}
+
+void getHallValue() {
+  Serial.print("Hall: ");
+  Serial.println(hallRead());
+  SerialBT.print("Hall: ");
+  SerialBT.print(hallRead());
 }
 
 void IFTTT(int postValue, float postValue2) {
