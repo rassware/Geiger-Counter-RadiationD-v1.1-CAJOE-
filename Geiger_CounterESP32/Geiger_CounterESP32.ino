@@ -76,14 +76,14 @@ int wifi_counter = 0;                                    // WiFi connection atte
 uint8_t temprature_sens_read();                          // internal temperature sensor
 int hall_value = 0;                                      // internal hall sensor
 bool isrFired = false;                                   // flag for ISR
+bool btDebug = false;                                    // flag send debug info via Bluetooth
+String btMsg;                                            // Bluetooth message
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
   isrMillis = millis();
   isrFired = true;
   counts++;
-  unsigned long wait = millis() + 100;
-  while (wait > millis()) {}
 }
 
 void setup() {
@@ -142,7 +142,25 @@ void loop() {
     digitalWrite(LED_BUILTIN, LOW);
   }
 
-  if (currentMillis - previousBTMillis > BT_LOG_PERIOD) {
+  if (SerialBT.available()) {
+    btMsg = SerialBT.readString();
+    if (btMsg == "debugon") {
+        btDebug = true;
+        SerialBT.println("Turn on debug ...");
+     } 
+     else
+     if (btMsg == "debugoff") {
+        btDebug = false;
+        SerialBT.println("Turn off debug ...");
+     }
+     else {
+        SerialBT.print("Command <");
+        SerialBT.print(btMsg);
+        SerialBT.println("> not available");
+     }
+  }
+
+  if (btDebug && currentMillis - previousBTMillis > BT_LOG_PERIOD) {
     previousBTMillis = currentMillis;
     SerialBT.print("Counts: ");
     SerialBT.println(counts);
