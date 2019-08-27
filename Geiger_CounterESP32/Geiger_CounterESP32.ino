@@ -59,8 +59,6 @@ uint8_t temprature_sens_read();
 }
 #endif
 
-uint8_t temprature_sens_read();
-
 WiFiClient client;
 BluetoothSerial SerialBT;
 
@@ -88,8 +86,11 @@ void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter b
 
 void setup() {
   Serial.begin(115200);
-  //Bluetooth device name
   SerialBT.begin("GeigerCounterBT");
+
+  pinMode(input_pin_geiger, INPUT);                                                // Set pin for capturing Tube events
+  pinMode(LED_BUILTIN, OUTPUT);                                                    // status LED init
+  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);  // Define interrupt on falling edge
 
   // Set WiFi to station mode and disconnect from an AP if it was Previously
   // connected
@@ -97,74 +98,24 @@ void setup() {
   WiFi.disconnect();
   delay(100);
 
-  Serial.print("Connecting Wifi: ");
-  Serial.println(mySSID);
-
-  SerialBT.print("Connecting Wifi: ");
-  SerialBT.println(mySSID);
-
-  WiFi.begin(mySSID, myPASSWORD);
-
   while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
+    connectWifi();
   }
-  Serial.println();
-  Serial.println("Wi-Fi Connected");
-  Serial.println("IP address: ");
-  IPAddress ip = WiFi.localIP();
-  Serial.println(ip);
-
-  SerialBT.println("Wi-Fi Connected");
-  SerialBT.println("IP address: ");
-  SerialBT.println(ip);
-
-  pinMode(input_pin_geiger, INPUT);                                                // Set pin for capturing Tube events
-  pinMode(LED_BUILTIN, OUTPUT);                                                    // status LED init
-  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);  // Define interrupt on falling edge
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
   if (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    WiFi.begin(mySSID, myPASSWORD);
-    wifi_counter = 0;
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
-      wifi_counter++;
-      if (wifi_counter >= 60) { //30 seconds timeout - reset board
-        ESP.restart();
-      }
-    }
-    digitalWrite(LED_BUILTIN, LOW);
+    connectWifi();
   }
 
-  if (SerialBT.available()) {
-    btMsg = SerialBT.readStringUntil('\r');
-    if (btMsg == "debugon") {
-      btDebug = true;
-      SerialBT.println("Turn on debug ...");
-    }
-    else if (btMsg == "debugoff") {
-      btDebug = false;
-      SerialBT.println("Turn off debug ...");
-    }
-    else if (btMsg == "temp") {
-      uint8_t temp = (temprature_sens_read() - 32) / 1.8;
-      SerialBT.print("Temp in Celsius: ");
-      SerialBT.println(temp);
-    }
-    else if (btMsg == "hall") {
-      SerialBT.print("Hall: ");
-      SerialBT.print(hallRead());
-    }
-  }
+  handleBTCommands();
 
   if (btDebug && currentMillis - previousBTMillis > BT_LOG_PERIOD) {
     previousBTMillis = currentMillis;
+    Serial.print("Counts: ");
+    Serial.println(counts);
     SerialBT.print("Counts: ");
     SerialBT.println(counts);
   }
@@ -183,8 +134,59 @@ void loop() {
     postThinspeak(cpm, mSvh);
     getTemperature();
     getHallValue();
-    if (cpm > 200 ) IFTTT(cpm, mSvh);
+    if (cpm > 100 ) IFTTT(cpm, mSvh);
     digitalWrite(LED_BUILTIN, LOW);
+  }
+}
+
+void connectWifi() {
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  Serial.print("Connecting Wifi: ");
+  Serial.println(mySSID);
+
+  SerialBT.print("Connecting Wifi: ");
+  SerialBT.println(mySSID);
+
+  WiFi.begin(mySSID, myPASSWORD);
+  wifi_counter = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    wifi_counter++;
+    if (wifi_counter >= 60) { //30 seconds timeout - reset board
+      ESP.restart();
+    }
+  }
+
+  Serial.println("Wi-Fi Connected");
+  Serial.println("IP address: ");
+  IPAddress ip = WiFi.localIP();
+  Serial.println(ip);
+
+  SerialBT.println("Wi-Fi Connected");
+  SerialBT.println("IP address: ");
+  SerialBT.println(ip);
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+void handleBTCommands() {
+  if (SerialBT.available()) {
+    btMsg = SerialBT.readStringUntil('\r');
+    if (btMsg == "debugon") {
+      btDebug = true;
+      SerialBT.println("Turn on debug ...");
+    }
+    else if (btMsg == "debugoff") {
+      btDebug = false;
+      SerialBT.println("Turn off debug ...");
+    }
+    else if (btMsg == "temp") {
+      getTemperature();
+    }
+    else if (btMsg == "hall") {
+      getHallValue();
+    }
   }
 }
 
@@ -239,7 +241,7 @@ void getHallValue() {
   Serial.print("Hall: ");
   Serial.println(hallRead());
   SerialBT.print("Hall: ");
-  SerialBT.print(hallRead());
+  SerialBT.println(hallRead());
 }
 
 void IFTTT(int postValue, float postValue2) {
