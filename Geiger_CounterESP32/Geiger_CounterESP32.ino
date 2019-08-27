@@ -143,21 +143,24 @@ void loop() {
   }
 
   if (SerialBT.available()) {
-    btMsg = SerialBT.readString();
+    btMsg = SerialBT.readStringUntil('\r');
     if (btMsg == "debugon") {
-        btDebug = true;
-        SerialBT.println("Turn on debug ...");
-     } 
-     else
-     if (btMsg == "debugoff") {
-        btDebug = false;
-        SerialBT.println("Turn off debug ...");
-     }
-     else {
-        SerialBT.print("Command <");
-        SerialBT.print(btMsg);
-        SerialBT.println("> not available");
-     }
+      btDebug = true;
+      SerialBT.println("Turn on debug ...");
+    }
+    else if (btMsg == "debugoff") {
+      btDebug = false;
+      SerialBT.println("Turn off debug ...");
+    }
+    else if (btMsg == "temp") {
+      uint8_t temp = (temprature_sens_read() - 32) / 1.8;
+      SerialBT.print("Temp in Celsius: ");
+      SerialBT.println(temp);
+    }
+    else if (btMsg == "hall") {
+      SerialBT.print("Hall: ");
+      SerialBT.print(hallRead());
+    }
   }
 
   if (btDebug && currentMillis - previousBTMillis > BT_LOG_PERIOD) {
@@ -166,11 +169,9 @@ void loop() {
     SerialBT.println(counts);
   }
 
-  if (isrFired) {
-    if (( millis() - isrMillis) >= 100  ) {
-      attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
-      isrFired = false;
-    }
+  if (isrFired && ( millis() - isrMillis) >= 100  ) {
+    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
+    isrFired = false;
   }
 
   if (currentMillis - previousMillis > LOG_PERIOD) {
