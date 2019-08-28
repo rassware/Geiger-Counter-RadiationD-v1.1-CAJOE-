@@ -16,12 +16,17 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <BluetoothSerial.h>
+#include <EEPROM.h>
 #include <credentials.h> // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
 #define LOG_PERIOD 60000 //Logging period in milliseconds
 #define BT_LOG_PERIOD 1000 //Bluetooth logging period in milliseconds
 #define MINUTE_PERIOD 60000
 #define TUBE_FACTOR_SIEVERT 0.00812037037037
+#define CPM_THRESHOLD 100
+#define LAST_VALUES_SIZE 60
+#define EEPROM_SIZE 1
+#define STRING_BUFFER_SIZE 50
 
 #ifndef CREDENTIALS
 
@@ -63,19 +68,18 @@ WiFiClient client;
 BluetoothSerial SerialBT;
 
 volatile unsigned long counts = 0;                       // Tube events
+volatile unsigned long isrMillis;                        // Time measurement for last ISR
+volatile bool isrFired = false;                          // flag for ISR
+
 const int LED_BUILTIN = 2;                               // status LED
 const int input_pin_geiger = 18;                         // input pin for geiger board
+
 unsigned long cpm = 0;                                   // CPM
 float mSvh = 0.0f;                                       // Micro Sievert
 unsigned long previousMillis;                            // Time measurement
-unsigned long previousBTMillis;                          // Time measurement for bluetooth
-unsigned long isrMillis;                                 // Time measurement for last ISR
-int wifi_counter = 0;                                    // WiFi connection attempts
-uint8_t temprature_sens_read();                          // internal temperature sensor
-int hall_value = 0;                                      // internal hall sensor
-bool isrFired = false;                                   // flag for ISR
-bool btDebug = false;                                    // flag send debug info via Bluetooth
-String btMsg;                                            // Bluetooth message
+unsigned long previousLogMillis;                         // Time measurement for serial logging
+bool debug = false;                                      // flag send debug info via Bluetooth
+unsigned long lastCPMValues[LAST_VALUES_SIZE];           // last cpm values
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
@@ -87,6 +91,7 @@ void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter b
 void setup() {
   Serial.begin(115200);
   SerialBT.begin("GeigerCounterBT");
+  EEPROM.begin(EEPROM_SIZE);
 
   pinMode(input_pin_geiger, INPUT);                                                // Set pin for capturing Tube events
   pinMode(LED_BUILTIN, OUTPUT);                                                    // status LED init
@@ -97,10 +102,11 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
-
   while (WiFi.status() != WL_CONNECTED) {
     connectWifi();
   }
+
+  debug = EEPROM.read(0);
 }
 
 void loop() {
@@ -110,17 +116,17 @@ void loop() {
     connectWifi();
   }
 
-  handleBTCommands();
+  handleCommands();
 
-  if (btDebug && currentMillis - previousBTMillis > BT_LOG_PERIOD) {
-    previousBTMillis = currentMillis;
+  if (debug && currentMillis - previousLogMillis > BT_LOG_PERIOD) {
+    previousLogMillis = currentMillis;
     Serial.print("Counts: ");
     Serial.println(counts);
     SerialBT.print("Counts: ");
     SerialBT.println(counts);
   }
 
-  if (isrFired && ( millis() - isrMillis) >= 100  ) {
+  if (isrFired && ( millis() - isrMillis) >= 100) {
     attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
     isrFired = false;
   }
@@ -132,9 +138,12 @@ void loop() {
     mSvh = cpm * TUBE_FACTOR_SIEVERT;
     counts = 0;
     postThinspeak(cpm, mSvh);
-    getTemperature();
-    getHallValue();
-    if (cpm > 100 ) IFTTT(cpm, mSvh);
+    pushCPMValueToArray(cpm);
+    printAverage();
+    printTemperature();
+    printHallValue();
+    if (cpm > CPM_THRESHOLD ) IFTTT(cpm, mSvh);
+    checkInterrupt(cpm);
     digitalWrite(LED_BUILTIN, LOW);
   }
 }
@@ -149,7 +158,7 @@ void connectWifi() {
   SerialBT.println(mySSID);
 
   WiFi.begin(mySSID, myPASSWORD);
-  wifi_counter = 0;
+  int wifi_counter = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -170,27 +179,73 @@ void connectWifi() {
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-void handleBTCommands() {
-  if (SerialBT.available()) {
-    btMsg = SerialBT.readStringUntil('\r');
-    if (btMsg == "debugon") {
-      btDebug = true;
-      SerialBT.println("Turn on debug ...");
-    }
-    else if (btMsg == "debugoff") {
-      btDebug = false;
-      SerialBT.println("Turn off debug ...");
-    }
-    else if (btMsg == "temp") {
-      getTemperature();
-    }
-    else if (btMsg == "hall") {
-      getHallValue();
-    }
+void handleCommands() {
+  char stringBuffer[STRING_BUFFER_SIZE];
+  if (SerialBT.available() && readLine(stringBuffer, SerialBT)) {
+    commandHandler(stringBuffer);
+  } else if (Serial.available() && readLine(stringBuffer, Serial)) {
+    commandHandler(stringBuffer);
   }
 }
 
-void postThinspeak(int postValue, float postValue2) {
+bool readLine(char* stringBuffer, Stream& stream) {
+  int index = 0;
+  while (stream.available()) {
+    char c = stream.read();
+    if (c >= 32 && index < STRING_BUFFER_SIZE - 1) {
+      stringBuffer[index++] = c;
+    }
+    else if (c == '\n' && index > 0) {
+      stringBuffer[index] = '\0';
+      return true;
+    }
+  }
+  return false;
+}
+
+void commandHandler(const char* command) {
+  bool commitEEPROM = false;
+  String msg;
+  if (strcmp(command, "debugon") == 0) {
+    debug = true;
+    commitEEPROM = true;
+    msg = "Turn on debug ...";
+    Serial.println(msg);
+    SerialBT.println(msg);
+  }
+  else if (strcmp(command, "debugoff") == 0) {
+    debug = false;
+    commitEEPROM = true;
+    msg = "Turn off debug ...";
+    Serial.println(msg);
+    SerialBT.println(msg);
+  }
+  else if (strcmp(command, "temp") == 0) {
+    printTemperature();
+  }
+  else if (strcmp(command, "hall") == 0) {
+    printHallValue();
+  }
+  else if (strcmp(command, "last") == 0) {
+    printLastCPMValues();
+  }
+  else if (strcmp(command, "restart") == 0) {
+    ESP.restart();
+  }
+  else {
+    msg = "unknown command: ";
+    Serial.println(msg);
+    Serial.println(command);
+    SerialBT.println(msg);
+    SerialBT.println(command);
+  }
+  if (commitEEPROM) {
+    EEPROM.write(0, debug);
+    EEPROM.commit();
+  }
+}
+
+void postThinspeak(unsigned long postValue, float postValue2) {
   if (client.connect(server, 80)) {
 
     // Construct API request body
@@ -228,7 +283,7 @@ void postThinspeak(int postValue, float postValue2) {
   client.stop();
 }
 
-void getTemperature() {
+void printTemperature() {
   // Convert raw temperature in F to Celsius degrees
   uint8_t temp = (temprature_sens_read() - 32) / 1.8;
   Serial.print("Temp in Celsius: ");
@@ -237,11 +292,55 @@ void getTemperature() {
   SerialBT.println(temp);
 }
 
-void getHallValue() {
+void printHallValue() {
   Serial.print("Hall: ");
   Serial.println(hallRead());
   SerialBT.print("Hall: ");
   SerialBT.println(hallRead());
+}
+
+void pushCPMValueToArray(unsigned long cpm) {
+  for (int i = LAST_VALUES_SIZE - 1; i > 0; i--) {
+    lastCPMValues[i] = lastCPMValues[i - 1];
+  }
+  lastCPMValues[0] = cpm;
+}
+
+void printLastCPMValues() {
+  char buf[100];
+  snprintf(buf, sizeof buf, "Radioactivity (CPM) last values: %lu,%lu,%lu,%lu,%lu", lastCPMValues[0], lastCPMValues[1], lastCPMValues[2], lastCPMValues[3], lastCPMValues[4]);
+  Serial.println(buf);
+  SerialBT.println(buf);
+}
+
+// sometimes the interrupt go crazy
+void checkInterrupt(unsigned long cpm) {
+  if ((cpm + lastCPMValues[0]) == 0) {
+    String msg = "Possible interrupt mess up! Reattaching interrupt";
+    Serial.println(msg);
+    SerialBT.println(msg);
+    detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
+    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
+  }
+}
+
+void printAverage() {
+  int countValues = 0;
+  unsigned long sumValues = 0;
+  for (int i = 0; i < LAST_VALUES_SIZE; i++) {
+    sumValues += lastCPMValues[i];
+    if (lastCPMValues[i] > 0) countValues++;
+  }
+  unsigned long average;
+  if (countValues == 0) {
+    average = 0;
+  } else {
+    average = sumValues / countValues;
+  }
+  Serial.print("Radioactivity (CPM Average): ");
+  Serial.println(average);
+  SerialBT.print("Radioactivity (CPM Average): ");
+  SerialBT.println(average);
 }
 
 void IFTTT(int postValue, float postValue2) {
@@ -249,13 +348,14 @@ void IFTTT(int postValue, float postValue2) {
   itoa(postValue, postValueChar, 10);
   char postValue2Char[8];
   dtostrf(postValue2, 6, 2, postValue2Char);
+  String msg;
   if (trigger(IFTTT_KEY, DEFAULT_IFTTT_FINGERPRINT, EVENT_NAME, postValueChar, postValue2Char, NULL)) {
-    Serial.println("IFTTT failed!");
-    SerialBT.println("IFTTT failed!");
+    msg = "IFTTT failed!";
   } else {
-    Serial.println("Successfully sent to IFTTT");
-    SerialBT.println("Successfully sent to IFTTT");
+    msg = "Successfully sent to IFTTT";
   }
+  Serial.println(msg);
+  SerialBT.println(msg);
 }
 
 
