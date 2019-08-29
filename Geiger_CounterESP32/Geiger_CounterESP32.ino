@@ -120,13 +120,15 @@ void loop() {
 
   if (debug && currentMillis - previousLogMillis > BT_LOG_PERIOD) {
     previousLogMillis = currentMillis;
-    unsigned long cpm = counts * MINUTE_PERIOD / BT_LOG_PERIOD;
+    int elapsedSeconds = (currentMillis - previousMillis) / 1000;
+    if (elapsedSeconds == 0) elapsedSeconds = 1;
+    float clicksPerSecound = (float)counts / elapsedSeconds;
+    unsigned long cpm = clicksPerSecound * MINUTE_PERIOD / BT_LOG_PERIOD;
     float mSvh = cpm * TUBE_FACTOR_SIEVERT;
     char buf[100];
     snprintf(buf, sizeof buf, "Actual CPM: %lu, CPM: %lu, mSv/h: %f", counts, cpm, mSvh);
     Serial.println(buf);
     SerialBT.println(buf);
-
   }
 
   if (isrFired && ( currentMillis - isrMillis) >= 100) {
