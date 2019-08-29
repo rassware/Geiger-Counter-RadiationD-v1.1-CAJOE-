@@ -17,16 +17,15 @@
 #include <HTTPClient.h>
 #include <BluetoothSerial.h>
 #include <EEPROM.h>
-#include <credentials.h> // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
+#include <credentials.h>                       // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
-#define LOG_PERIOD 60000 //Logging period in milliseconds
-#define BT_LOG_PERIOD 1000 //Bluetooth logging period in milliseconds
-#define MINUTE_PERIOD 60000
-#define TUBE_FACTOR_SIEVERT 0.00812037037037
-#define CPM_THRESHOLD 100
-#define LAST_VALUES_SIZE 60
-#define EEPROM_SIZE 1
-#define STRING_BUFFER_SIZE 50
+#define LOG_PERIOD 60000                       // Logging period in milliseconds
+#define BT_LOG_PERIOD 1000                     // Bluetooth logging period in milliseconds
+#define MINUTE_PERIOD 60000                    // minute period
+#define TUBE_FACTOR_SIEVERT 0.00812037037037   // the factor for the J305ß tube
+#define LAST_VALUES_SIZE 60                    // size of the history array
+#define EEPROM_SIZE 1                          // size of the needed EEPROM
+#define STRING_BUFFER_SIZE 50                  // size of the handy stringbuffer
 
 #ifndef CREDENTIALS
 
@@ -34,28 +33,31 @@
 #define mySSID "xxx"
 #define myPASSWORD "xxx"
 
-//Thinspeak
+//Thinspeak credentials
 #define THINKSPEAK_CHANNEL 123456
 #define WRITE_API_KEY  "xxx"
 
-// IFTTT
+// IFTTT credentials
 #define IFTTT_KEY "xxx"
 
 #endif
 
+// IFTTT settings
+#define EVENT_NAME "Radioactivity"             // event name for IFTTT
+#define CPM_THRESHOLD 100                      // Threshold for IFTTT warning
+// fingerprint: openssl s_client -connect maker.ifttt.com:443  < /dev/null 2>/dev/null | openssl x509 -fingerprint -noout | cut -d'=' -f2
+#define DEFAULT_IFTTT_FINGERPRINT "AA:75:CB:41:2E:D5:F9:97:FF:5D:A0:8B:7D:AC:12:21:08:4B:00:8C"
+
+// ThingSpeak settings
+const int channelID = THINKSPEAK_CHANNEL;
+const char* server = "api.thingspeak.com";
+
+// Check Bluetooth config
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
 #endif
 
-#define EVENT_NAME "Radioactivity"
-// fingerprint: openssl s_client -connect maker.ifttt.com:443  < /dev/null 2>/dev/null | openssl x509 -fingerprint -noout | cut -d'=' -f2
-#define DEFAULT_IFTTT_FINGERPRINT "AA:75:CB:41:2E:D5:F9:97:FF:5D:A0:8B:7D:AC:12:21:08:4B:00:8C"
-//#define IFTTT_WEBHOOK_DEBUG
-
-// ThingSpeak Settings
-const int channelID = THINKSPEAK_CHANNEL;
-const char* server = "api.thingspeak.com";
-
+// Init temperature sensor
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -74,12 +76,10 @@ volatile bool isrFired = false;                          // flag for ISR
 const int LED_BUILTIN = 2;                               // status LED
 const int input_pin_geiger = 18;                         // input pin for geiger board
 
-unsigned long cpm = 0;                                   // CPM
-float mSvh = 0.0f;                                       // Micro Sievert
 unsigned long previousMillis;                            // Time measurement
 unsigned long previousLogMillis;                         // Time measurement for serial logging
-bool debug = false;                                      // flag send debug info via Bluetooth
 unsigned long lastCPMValues[LAST_VALUES_SIZE];           // last cpm values
+bool debug = false;                                      // flag send debug info via Bluetooth
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
@@ -120,19 +120,24 @@ void loop() {
 
   if (debug && currentMillis - previousLogMillis > BT_LOG_PERIOD) {
     previousLogMillis = currentMillis;
-    Serial.print("Counts: ");
-    Serial.println(counts);
-    SerialBT.print("Counts: ");
-    SerialBT.println(counts);
+    unsigned long cpm = counts * MINUTE_PERIOD / BT_LOG_PERIOD;
+    float mSvh = cpm * TUBE_FACTOR_SIEVERT;
+    char buf[100];
+    snprintf(buf, sizeof buf, "Actual CPM: %lu, CPM: %lu, mSv/h: %f", counts, cpm, mSvh);
+    Serial.println(buf);
+    SerialBT.println(buf);
+
   }
 
-  if (isrFired && ( millis() - isrMillis) >= 100) {
-    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
+  if (isrFired && ( currentMillis - isrMillis) >= 100) {
     isrFired = false;
+    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
   }
 
   if (currentMillis - previousMillis > LOG_PERIOD) {
     digitalWrite(LED_BUILTIN, HIGH);
+    unsigned long cpm;
+    float mSvh;
     previousMillis = currentMillis;
     cpm = counts * MINUTE_PERIOD / LOG_PERIOD;
     mSvh = cpm * TUBE_FACTOR_SIEVERT;
@@ -313,7 +318,7 @@ void printLastCPMValues() {
   SerialBT.println(buf);
 }
 
-// sometimes the interrupt go crazy
+// sometimes the interrupt get lost
 void checkInterrupt(unsigned long cpm) {
   if ((cpm + lastCPMValues[0]) == 0) {
     String msg = "Possible interrupt mess up! Reattaching interrupt";
@@ -325,6 +330,14 @@ void checkInterrupt(unsigned long cpm) {
 }
 
 void printAverage() {
+  unsigned long average = calcAverage();
+  Serial.print("Radioactivity (CPM Average): ");
+  Serial.println(average);
+  SerialBT.print("Radioactivity (CPM Average): ");
+  SerialBT.println(average);
+}
+
+unsigned long calcAverage() {
   int countValues = 0;
   unsigned long sumValues = 0;
   for (int i = 0; i < LAST_VALUES_SIZE; i++) {
@@ -333,14 +346,10 @@ void printAverage() {
   }
   unsigned long average;
   if (countValues == 0) {
-    average = 0;
+    return average = 0;
   } else {
-    average = sumValues / countValues;
+    return average = sumValues / countValues;
   }
-  Serial.print("Radioactivity (CPM Average): ");
-  Serial.println(average);
-  SerialBT.print("Radioactivity (CPM Average): ");
-  SerialBT.println(average);
 }
 
 void IFTTT(int postValue, float postValue2) {
@@ -371,13 +380,6 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
   int payload_length = 37 + (value1 ? strlen(value1) : 0) + (value2 ? strlen(value2) : 0) + (value3 ? strlen(value3) : 0);
   char ifttt_payload[payload_length];
 
-#ifdef IFTTT_WEBHOOK_DEBUG
-  Serial.print("URL length: ");
-  Serial.println(url_length);
-  Serial.print("Payload length: ");
-  Serial.println(payload_length);
-#endif
-
   // Compute URL
   snprintf(ifttt_url, url_length, "%s/%s/with/key/%s", ifttt_base, event_name, api_key);
 
@@ -392,7 +394,6 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
       strcat(ifttt_payload, ",");
     }
   }
-
   if (value2) {
     strcat(ifttt_payload, "\"value2\":\"");
     strcat(ifttt_payload, value2);
@@ -401,37 +402,16 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
       strcat(ifttt_payload, ",");
     }
   }
-
   if (value3) {
     strcat(ifttt_payload, "\"value3\":\"");
     strcat(ifttt_payload, value3);
     strcat(ifttt_payload, "\"");
   }
-
   strcat(ifttt_payload, "}");
-
-#ifdef IFTTT_WEBHOOK_DEBUG
-  Serial.print("URL: ");
-  Serial.println(ifttt_url);
-  Serial.print("Payload: ");
-  Serial.println(ifttt_payload);
-#endif
 
   http.begin(ifttt_url, ifttt_fingerprint);
   http.addHeader("Content-Type", "application/json");
   int httpCode = http.POST(ifttt_payload);
-
-#ifdef IFTTT_WEBHOOK_DEBUG
-  Serial.printf("[HTTP] POST... code: %d\n", httpCode);
-  if (httpCode > 0) {
-    if (httpCode == HTTP_CODE_OK) {
-      Serial.println(http.getString());
-    }
-  } else {
-    Serial.printf("[HTTP] POST... failed, error %s\n", http.errorToString(httpCode).c_str());
-  }
-#endif
-
   http.end();
 
   return httpCode != HTTP_CODE_OK;
