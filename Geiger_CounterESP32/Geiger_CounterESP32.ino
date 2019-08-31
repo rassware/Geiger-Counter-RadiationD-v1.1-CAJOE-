@@ -17,6 +17,10 @@
 #include <HTTPClient.h>
 #include <BluetoothSerial.h>
 #include <EEPROM.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <WebServer.h>
+#include <SPIFFS.h>
 #include <credentials.h>                       // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
 #define LOG_PERIOD 60000                       // Logging period in milliseconds
@@ -24,8 +28,9 @@
 #define MINUTE_PERIOD 60000                    // minute period
 #define TUBE_FACTOR_SIEVERT 0.00812037037037   // the factor for the J305ß tube
 #define LAST_VALUES_SIZE 60                    // size of the history array
-#define EEPROM_SIZE 1                          // size of the needed EEPROM
+#define EEPROM_SIZE 5                          // size of the needed EEPROM
 #define STRING_BUFFER_SIZE 50                  // size of the handy stringbuffer
+#define FORMAT_SPIFFS_IF_FAILED false          // need to format only the first time
 
 #ifndef CREDENTIALS
 
@@ -36,6 +41,9 @@
 //Thinspeak credentials
 #define THINKSPEAK_CHANNEL 123456
 #define WRITE_API_KEY  "xxx"
+#define LATITUDE 0.0000000
+#define LONGITUDE 0.0000000
+#define ELEVATION 0
 
 // IFTTT credentials
 #define IFTTT_KEY "xxx"
@@ -50,7 +58,7 @@
 
 // ThingSpeak settings
 const int channelID = THINKSPEAK_CHANNEL;
-const char* server = "api.thingspeak.com";
+const char* thingspeakServer = "api.thingspeak.com";
 
 // Check Bluetooth config
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
@@ -68,6 +76,9 @@ uint8_t temprature_sens_read();
 
 WiFiClient client;
 BluetoothSerial SerialBT;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "ptbtime1.ptb.de", 0, 120000);
+WebServer server(80);
 
 volatile unsigned long counts = 0;                       // Tube events
 volatile unsigned long isrMillis;                        // Time measurement for last ISR
@@ -80,6 +91,9 @@ unsigned long previousMillis;                            // Time measurement
 unsigned long previousLogMillis;                         // Time measurement for serial logging
 unsigned long lastCPMValues[LAST_VALUES_SIZE];           // last cpm values
 bool debug = false;                                      // flag send debug info via Bluetooth
+bool connectWiFi = true;                                 // flag for connecting to WiFi
+bool writeToFile = false;                                // flag for writing to local file
+const char* fileName = "/cpms.txt";                      // file name to write
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
@@ -97,22 +111,48 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);                                                    // status LED init
   attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);  // Define interrupt on falling edge
 
-  // Set WiFi to station mode and disconnect from an AP if it was Previously
-  // connected
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
-  while (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
+  debug = EEPROM.read(0);
+  connectWiFi = EEPROM.read(1);
+  writeToFile = EEPROM.read(2);
+
+  if (connectWiFi) {
+    // Set WiFi to station mode and disconnect from an AP if it was Previously
+    // connected
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    delay(100);
+    while (WiFi.status() != WL_CONNECTED) {
+      connectWifi();
+    }
+    timeClient.begin();
+
+    server.on("/list", HTTP_GET, handleFileList);
+    server.on("/delete", HTTP_GET, handleFileDelete);
+    server.onNotFound([]() {
+      if (!handleFileRead(server.uri())) {
+        server.send(404, "text/plain", "FileNotFound");
+      }
+    });
+    server.begin();
   }
 
-  debug = EEPROM.read(0);
+  if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
+    Serial.println("SPIFFS Mount Failed");
+    return;
+  }
 }
 
 void loop() {
   unsigned long currentMillis = millis();
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if (connectWiFi) {
+    while (!timeClient.update()) {
+      timeClient.forceUpdate();
+    }
+    server.handleClient();
+  }
+
+  if (connectWiFi && WiFi.status() != WL_CONNECTED) {
     connectWifi();
   }
 
@@ -126,7 +166,7 @@ void loop() {
     unsigned long cpm = clicksPerSecound * MINUTE_PERIOD / BT_LOG_PERIOD;
     float mSvh = cpm * TUBE_FACTOR_SIEVERT;
     char buf[100];
-    snprintf(buf, sizeof buf, "Actual CPM: %lu, CPM: %lu, mSv/h: %f", counts, cpm, mSvh);
+    snprintf(buf, sizeof buf, "Actual count: %lu, CPM: %lu, mSv/h: %f", counts, cpm, mSvh);
     Serial.println(buf);
     SerialBT.println(buf);
   }
@@ -144,13 +184,15 @@ void loop() {
     cpm = counts * MINUTE_PERIOD / LOG_PERIOD;
     mSvh = cpm * TUBE_FACTOR_SIEVERT;
     counts = 0;
-    postThinspeak(cpm, mSvh);
     pushCPMValueToArray(cpm);
+    printCPM(cpm, mSvh);
     printAverage();
     printTemperature();
     printHallValue();
-    if (cpm > CPM_THRESHOLD ) IFTTT(cpm, mSvh);
+    if (connectWiFi) postThingspeak(cpm, mSvh);
+    if (connectWiFi && cpm > CPM_THRESHOLD ) IFTTT(cpm, mSvh);
     checkInterrupt(cpm);
+    if (writeToFile) appendToFile(cpm, mSvh);
     digitalWrite(LED_BUILTIN, LOW);
   }
 }
@@ -213,17 +255,27 @@ bool readLine(char* stringBuffer, Stream& stream) {
 void commandHandler(const char* command) {
   bool commitEEPROM = false;
   String msg;
-  if (strcmp(command, "debugon") == 0) {
-    debug = true;
+  if (strcmp(command, "debug") == 0) {
+    debug = !debug;
     commitEEPROM = true;
-    msg = "Turn on debug ...";
+    if (debug) msg = "Turn on debug ...";
+    else msg = "Turn off debug ...";
     Serial.println(msg);
     SerialBT.println(msg);
   }
-  else if (strcmp(command, "debugoff") == 0) {
-    debug = false;
+  else if (strcmp(command, "wifi") == 0) {
+    connectWiFi = !connectWiFi;
     commitEEPROM = true;
-    msg = "Turn off debug ...";
+    if (connectWiFi) msg = "Turn on WiFi ...";
+    else msg = "Turn off WiFi ...";
+    Serial.println(msg);
+    SerialBT.println(msg);
+  }
+  else if (strcmp(command, "file") == 0) {
+    writeToFile = !writeToFile;
+    commitEEPROM = true;
+    if (writeToFile) msg = "Write to file on ...";
+    else msg = "Write to file off ...";
     Serial.println(msg);
     SerialBT.println(msg);
   }
@@ -248,30 +300,28 @@ void commandHandler(const char* command) {
   }
   if (commitEEPROM) {
     EEPROM.write(0, debug);
+    EEPROM.write(1, connectWiFi);
+    EEPROM.write(2, writeToFile);
     EEPROM.commit();
   }
 }
 
-void postThinspeak(unsigned long postValue, float postValue2) {
-  if (client.connect(server, 80)) {
+void postThingspeak(unsigned long postValue, float postValue2) {
+  if (client.connect(thingspeakServer, 80)) {
 
     // Construct API request body
     String body = "field1=";
     body += String(postValue);
     body += "&field2=";
     body += String(postValue2);
-
-    Serial.print("Radioactivity (CPM): ");
-    Serial.println(postValue);
-
-    Serial.print("Radioactivity (mSvh): ");
-    Serial.println(postValue2);
-
-    SerialBT.print("Radioactivity (CPM): ");
-    SerialBT.println(postValue);
-
-    SerialBT.print("Radioactivity (mSvh): ");
-    SerialBT.println(postValue2);
+    body += "&latitude=";
+    body += String(LATITUDE);
+    body += "&longitude=";
+    body += String(LONGITUDE);
+    body += "&elevation=";
+    body += String(ELEVATION);
+    body += "&status=";
+    body += String("OK");
 
     client.print("POST /update HTTP/1.1\n");
     client.print("Host: api.thingspeak.com\n");
@@ -331,12 +381,30 @@ void checkInterrupt(unsigned long cpm) {
   }
 }
 
+void printCPM(unsigned long cpm, float mSvh) {
+  Serial.print("Radioactivity (CPM): ");
+  Serial.println(cpm);
+
+  Serial.print("Radioactivity (mSv/h): ");
+  Serial.println(mSvh);
+
+  SerialBT.print("Radioactivity (CPM): ");
+  SerialBT.println(cpm);
+
+  SerialBT.print("Radioactivity (mSv/h): ");
+  SerialBT.println(mSvh);
+}
+
 void printAverage() {
   unsigned long average = calcAverage();
   Serial.print("Radioactivity (CPM Average): ");
   Serial.println(average);
+  Serial.print("Radioactivity (mSv/h Average): ");
+  Serial.println(average * TUBE_FACTOR_SIEVERT);
   SerialBT.print("Radioactivity (CPM Average): ");
   SerialBT.println(average);
+  SerialBT.print("Radioactivity (mSv/h Average): ");
+  SerialBT.println(average * TUBE_FACTOR_SIEVERT);
 }
 
 unsigned long calcAverage() {
@@ -417,4 +485,84 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
   http.end();
 
   return httpCode != HTTP_CODE_OK;
+}
+
+void handleFileList() {
+  if (!server.hasArg("dir")) {
+    server.send(500, "text/plain", "BAD ARGS");
+    return;
+  }
+  String path = server.arg("dir");
+  File root = SPIFFS.open(path);
+  path = String();
+  String output = "<html><head><title>GeigerCounter</title></head><body><h1>Geiger Counter</h1><table border='1'><thead><tr><td>type</td><td>name</td><td>size</td><td>actions</td></thead><tbody>";
+  if (root.isDirectory()) {
+    File file = root.openNextFile();
+    while (file) {
+      output += "<tr><td>";
+      output += (file.isDirectory()) ? "dir" : "file";
+      output += "</td><td>";
+      output += String(file.name()).substring(1);
+      output += "</td><td>";
+      output += String(file.size()) + " Bytes";
+      output += "</td><td><a href='" + String(file.name()) + "'>show</a>&nbsp;<a href='/delete?a=" + String(file.name()) + "'>delete</a></td></tr>";
+      file = root.openNextFile();
+    }
+  }
+  output += "</tbody></table></body></html>";
+  server.send(200, "text/html", output);
+}
+
+void handleFileDelete() {
+  if (server.args() == 0) {
+    return server.send(500, "text/plain", "BAD ARGS");
+  }
+  String path = server.arg(0);
+  if (path == "/") {
+    return server.send(500, "text/plain", "BAD PATH");
+  }
+  if (!exists(path)) {
+    return server.send(404, "text/plain", "FileNotFound");
+  }
+  SPIFFS.remove(path);
+  server.send(200, "text/plain", "DELETED");
+  path = String();
+}
+
+bool handleFileRead(String path) {
+  if (exists(path)) {
+    File file = SPIFFS.open(path, "r");
+    server.streamFile(file, "text/plain");
+    file.close();
+    return true;
+  }
+  return false;
+}
+
+bool exists(String path) {
+  bool yes = false;
+  File file = SPIFFS.open(path, "r");
+  if (!file.isDirectory()) {
+    yes = true;
+  }
+  file.close();
+  return yes;
+}
+
+void appendToFile(unsigned long cpm, float mSvh) {
+  File file = SPIFFS.open(fileName, FILE_APPEND);
+  if (!file) {
+    Serial.println("- failed to open file for writing");
+    SerialBT.println("- failed to open file for writing");
+    return;
+  }
+  char buf[100];
+  snprintf(buf, sizeof buf, "%lu,%lu,%f", timeClient.getEpochTime(), cpm, mSvh);
+  if (file.println(buf)) {
+    Serial.println("File updated");
+    SerialBT.println("File updated");
+  } else {
+    Serial.println("File updated");
+    SerialBT.println("File updated");
+  }
 }
