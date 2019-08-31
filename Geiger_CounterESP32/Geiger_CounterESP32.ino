@@ -126,7 +126,7 @@ void setup() {
     }
     timeClient.begin();
 
-    server.on("/list", HTTP_GET, handleFileList);
+    server.on("/", HTTP_GET, handleFileList);
     server.on("/delete", HTTP_GET, handleFileDelete);
     server.onNotFound([]() {
       if (!handleFileRead(server.uri())) {
@@ -146,9 +146,7 @@ void loop() {
   unsigned long currentMillis = millis();
 
   if (connectWiFi) {
-    while (!timeClient.update()) {
-      timeClient.forceUpdate();
-    }
+    timeClient.update();
     server.handleClient();
   }
 
@@ -488,14 +486,17 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
 }
 
 void handleFileList() {
-  if (!server.hasArg("dir")) {
-    server.send(500, "text/plain", "BAD ARGS");
-    return;
-  }
-  String path = server.arg("dir");
+  String path = "/";
   File root = SPIFFS.open(path);
   path = String();
-  String output = "<html><head><title>GeigerCounter</title></head><body><h1>Geiger Counter</h1><table border='1'><thead><tr><td>type</td><td>name</td><td>size</td><td>actions</td></thead><tbody>";
+  unsigned long average = calcAverage();
+  String output = "<html><head><title>GeigerCounter</title></head><body><h1>Geiger Counter</h1>";
+  output += "<h3>Actual counts: " + String(counts) + "</h3>";
+  output += "<h3>CPM average: " + String(average) + "</h3>";
+  output += "<h3>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</h3>";
+  output += "<h3>CPU temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</h3>";
+  output += "<h3>Hall sensor: " + String(hallRead()) + "</h3>";
+  output += "<table border='1'><thead><tr><td>type</td><td>name</td><td>size</td><td>actions</td></thead><tbody>";
   if (root.isDirectory()) {
     File file = root.openNextFile();
     while (file) {
