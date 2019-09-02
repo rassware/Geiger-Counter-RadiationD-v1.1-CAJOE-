@@ -80,9 +80,9 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "ptbtime1.ptb.de", 0, 120000);
 WebServer server(80);
 
-volatile unsigned long counts = 0;                       // Tube events
-volatile unsigned long isrMillis;                        // Time measurement for last ISR
-volatile bool isrFired = false;                          // flag for ISR
+volatile DRAM_ATTR unsigned long counts = 0;                       // Tube events
+volatile DRAM_ATTR unsigned long isrMillis;                        // Time measurement for last ISR
+volatile DRAM_ATTR bool isrFired = false;                          // flag for ISR
 
 const int LED_BUILTIN = 2;                               // status LED
 const int input_pin_geiger = 18;                         // input pin for geiger board
@@ -164,7 +164,7 @@ void loop() {
     unsigned long cpm = clicksPerSecound * MINUTE_PERIOD / BT_LOG_PERIOD;
     float mSvh = cpm * TUBE_FACTOR_SIEVERT;
     char buf[100];
-    snprintf(buf, sizeof buf, "Actual count: %lu, CPM: %lu, mSv/h: %f", counts, cpm, mSvh);
+    snprintf(buf, sizeof buf, "counts since %d seconds: %lu, CPM: %lu, mSv/h: %f", elapsedSeconds, counts, cpm, mSvh);
     Serial.println(buf);
     SerialBT.println(buf);
   }
@@ -486,29 +486,35 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
 }
 
 void handleFileList() {
-  String path = "/";
-  File root = SPIFFS.open(path);
-  path = String();
   unsigned long average = calcAverage();
+  int elapsedSeconds = (millis() - previousMillis) / 1000;
   String output = "<html><head><title>GeigerCounter</title></head><body><h1>Geiger Counter</h1>";
-  output += "<h3>Actual counts: " + String(counts) + "</h3>";
+  output += "<h3>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</h3>";
   output += "<h3>CPM average: " + String(average) + "</h3>";
   output += "<h3>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</h3>";
+  output += "<h3>Last CPMs: " + String(lastCPMValues[0]);
+  for (int i = 1; i < 9; i++) {
+    output += ", " + String(lastCPMValues[i]);
+  }
+  output += "</h3>";
   output += "<h3>CPU temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</h3>";
   output += "<h3>Hall sensor: " + String(hallRead()) + "</h3>";
+  output += "<h3>Debug flag: " + String(debug) + "</h3>";
+  output += "<h3>Connect Wifi: " + String(connectWiFi) + "</h3>";
+  output += "<h3>Write to file: " + String(writeToFile) + "</h3>";
   output += "<table border='1'><thead><tr><td>type</td><td>name</td><td>size</td><td>actions</td></thead><tbody>";
-  if (root.isDirectory()) {
-    File file = root.openNextFile();
-    while (file) {
-      output += "<tr><td>";
-      output += (file.isDirectory()) ? "dir" : "file";
-      output += "</td><td>";
-      output += String(file.name()).substring(1);
-      output += "</td><td>";
-      output += String(file.size()) + " Bytes";
-      output += "</td><td><a href='" + String(file.name()) + "'>show</a>&nbsp;<a href='/delete?a=" + String(file.name()) + "'>delete</a></td></tr>";
-      file = root.openNextFile();
-    }
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  while (file) {
+    output += "<tr><td>";
+    output += (file.isDirectory()) ? "dir" : "file";
+    output += "</td><td>";
+    output += String(file.name()).substring(1);
+    output += "</td><td>";
+    output += String(file.size()) + " Bytes";
+    output += "</td><td><a href='" + String(file.name()) + "'>show</a>&nbsp;<a href='/delete?a=" + String(file.name()) + "'>delete</a></td></tr>";
+    file.close();
+    file = root.openNextFile();
   }
   output += "</tbody></table></body></html>";
   server.send(200, "text/html", output);
@@ -522,7 +528,7 @@ void handleFileDelete() {
   if (path == "/") {
     return server.send(500, "text/plain", "BAD PATH");
   }
-  if (!exists(path)) {
+  if (!SPIFFS.exists(path)) {
     return server.send(404, "text/plain", "FileNotFound");
   }
   SPIFFS.remove(path);
@@ -531,23 +537,13 @@ void handleFileDelete() {
 }
 
 bool handleFileRead(String path) {
-  if (exists(path)) {
+  if (SPIFFS.exists(path)) {
     File file = SPIFFS.open(path, "r");
     server.streamFile(file, "text/plain");
     file.close();
     return true;
   }
   return false;
-}
-
-bool exists(String path) {
-  bool yes = false;
-  File file = SPIFFS.open(path, "r");
-  if (!file.isDirectory()) {
-    yes = true;
-  }
-  file.close();
-  return yes;
 }
 
 void appendToFile(unsigned long cpm, float mSvh) {
@@ -566,4 +562,5 @@ void appendToFile(unsigned long cpm, float mSvh) {
     Serial.println("File updated");
     SerialBT.println("File updated");
   }
+  file.close();
 }
