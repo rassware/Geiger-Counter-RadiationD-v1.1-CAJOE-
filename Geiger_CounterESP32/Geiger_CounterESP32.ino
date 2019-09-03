@@ -21,6 +21,7 @@
 #include <WiFiUdp.h>
 #include <WebServer.h>
 #include <SPIFFS.h>
+#include <esp32-hal-cpu.h>
 #include <credentials.h>                       // or define mySSID and myPASSWORD and THINGSPEAK_API_KEY
 
 #define LOG_PERIOD 60000                       // Logging period in milliseconds
@@ -80,9 +81,9 @@ WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "ptbtime1.ptb.de", 0, 120000);
 WebServer server(80);
 
-volatile DRAM_ATTR unsigned long counts = 0;                       // Tube events
-volatile DRAM_ATTR unsigned long isrMillis;                        // Time measurement for last ISR
-volatile DRAM_ATTR bool isrFired = false;                          // flag for ISR
+volatile unsigned long counts = 0;                       // Tube events
+volatile unsigned long isrMillis;                        // Time measurement for last ISR
+volatile bool isrFired = false;                          // flag for ISR
 
 const int LED_BUILTIN = 2;                               // status LED
 const int input_pin_geiger = 18;                         // input pin for geiger board
@@ -126,7 +127,8 @@ void setup() {
     }
     timeClient.begin();
 
-    server.on("/", HTTP_GET, handleFileList);
+    server.on("/", HTTP_GET, handleIndex);
+    server.on("/files", HTTP_GET, handleFileList);
     server.on("/delete", HTTP_GET, handleFileDelete);
     server.onNotFound([]() {
       if (!handleFileRead(server.uri())) {
@@ -140,6 +142,8 @@ void setup() {
     Serial.println("SPIFFS Mount Failed");
     return;
   }
+
+  setCpuFrequencyMhz(80);
 }
 
 void loop() {
@@ -189,7 +193,6 @@ void loop() {
     printHallValue();
     if (connectWiFi) postThingspeak(cpm, mSvh);
     if (connectWiFi && cpm > CPM_THRESHOLD ) IFTTT(cpm, mSvh);
-    checkInterrupt(cpm);
     if (writeToFile) appendToFile(cpm, mSvh);
     digitalWrite(LED_BUILTIN, LOW);
   }
@@ -368,17 +371,6 @@ void printLastCPMValues() {
   SerialBT.println(buf);
 }
 
-// sometimes the interrupt get lost
-void checkInterrupt(unsigned long cpm) {
-  if ((cpm + lastCPMValues[0]) == 0) {
-    String msg = "Possible interrupt mess up! Reattaching interrupt";
-    Serial.println(msg);
-    SerialBT.println(msg);
-    detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
-    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
-  }
-}
-
 void printCPM(unsigned long cpm, float mSvh) {
   Serial.print("Radioactivity (CPM): ");
   Serial.println(cpm);
@@ -485,23 +477,36 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
   return httpCode != HTTP_CODE_OK;
 }
 
-void handleFileList() {
+void handleIndex() {
   unsigned long average = calcAverage();
   int elapsedSeconds = (millis() - previousMillis) / 1000;
-  String output = "<html><head><title>GeigerCounter</title></head><body><h1>Geiger Counter</h1>";
-  output += "<h3>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</h3>";
-  output += "<h3>CPM average: " + String(average) + "</h3>";
-  output += "<h3>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</h3>";
-  output += "<h3>Last CPMs: " + String(lastCPMValues[0]);
+  String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>Geiger Counter</h1>";
+  output += "<h3>Radioactivity</h3>";
+  output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
+  output += "<p>CPM average: " + String(average) + "</p>";
+  output += "<p>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</p>";
+  output += "<p>Last CPMs: " + String(lastCPMValues[0]);
   for (int i = 1; i < 9; i++) {
     output += ", " + String(lastCPMValues[i]);
   }
-  output += "</h3>";
-  output += "<h3>CPU temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</h3>";
-  output += "<h3>Hall sensor: " + String(hallRead()) + "</h3>";
-  output += "<h3>Debug flag: " + String(debug) + "</h3>";
-  output += "<h3>Connect Wifi: " + String(connectWiFi) + "</h3>";
-  output += "<h3>Write to file: " + String(writeToFile) + "</h3>";
+  output += "</p>";
+  output += "<h3>CPU</h3>";
+  output += "<p>Frequency: " + String(getCpuFrequencyMhz()) + " MHz</p>";
+  output += "<p>Temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</p>";
+  output += "<h3>Sensors</h3>";
+  output += "<p>Hall sensor: " + String(hallRead()) + "</p>";
+  output += "<h3>Flags</h3>";
+  output += "<p>Debug flag: " + String(debug) + "</p>";
+  output += "<p>Connect Wifi: " + String(connectWiFi) + "</p>";
+  output += "<p>Write to file: " + String(writeToFile) + "</p>";
+  output += "<h3>SPIFFS files</h3>";
+  output += "<p><a href='/files'>Files</a></p>";
+  output += "</body></html>";
+  server.send(200, "text/html", output);
+}
+
+void handleFileList() {
+  String output = "<html><head><title>GeigerCounter Files</title></head><body style='text-align: center;font-family: verdana;'><h1>Geiger Counter Files</h1>";
   output += "<table border='1'><thead><tr><td>type</td><td>name</td><td>size</td><td>actions</td></thead><tbody>";
   File root = SPIFFS.open("/");
   File file = root.openNextFile();

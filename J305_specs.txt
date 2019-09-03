@@ -1,0 +1,18 @@
+305 Geiger Tube Specification:
+
+Tin oxide Cathode, Coaxial cylindrical thin shell structure(Wall density 50±10cg/cm2),Application of pulse type halogen tube
+application temperature:-40°C~55°C
+Could be used for : γ Ray 20 mR/h~120 mR/h and β Ray in range  100~1800 ChangingIndex/minutes·CM2 soft β Ray  (Both beta and gamma radiation detetion)
+Working Voltage: 380-450 V 
+Working Current: 0,015-0,02 mA
+Sensivity to Gamma Radiation: 0.1 MeV
+Own Background: 0,2 Pulses/s
+Length:  107±5 mm
+Diameter: 10±0.5 mm
+
+
+
+
+
+
+
