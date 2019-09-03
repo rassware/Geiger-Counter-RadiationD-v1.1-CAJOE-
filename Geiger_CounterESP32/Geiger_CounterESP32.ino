@@ -95,12 +95,15 @@ bool debug = false;                                      // flag send debug info
 bool connectWiFi = true;                                 // flag for connecting to WiFi
 bool writeToFile = false;                                // flag for writing to local file
 const char* fileName = "/cpms.txt";                      // file name to write
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;         // sync variable
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
+  portENTER_CRITICAL_ISR(&mux);
   isrMillis = millis();
   isrFired = true;
   counts++;
+  portEXIT_CRITICAL_ISR(&mux);
 }
 
 void setup() {
@@ -174,7 +177,9 @@ void loop() {
   }
 
   if (isrFired && ( currentMillis - isrMillis) >= 100) {
+    portENTER_CRITICAL(&mux);
     isrFired = false;
+    portEXIT_CRITICAL(&mux);
     attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
   }
 
@@ -185,7 +190,9 @@ void loop() {
     previousMillis = currentMillis;
     cpm = counts * MINUTE_PERIOD / LOG_PERIOD;
     mSvh = cpm * TUBE_FACTOR_SIEVERT;
+    portENTER_CRITICAL(&mux);
     counts = 0;
+    portEXIT_CRITICAL(&mux);
     pushCPMValueToArray(cpm);
     printCPM(cpm, mSvh);
     printAverage();
