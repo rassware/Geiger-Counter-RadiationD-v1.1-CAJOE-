@@ -86,7 +86,7 @@ volatile unsigned long isrMillis;                        // Time measurement for
 volatile bool isrFired = false;                          // flag for ISR
 
 const int LED_BUILTIN = 2;                               // status LED
-const int input_pin_geiger = 18;                         // input pin for geiger board
+const int input_pin_geiger = 19;                         // input pin for geiger board
 
 unsigned long previousMillis;                            // Time measurement
 unsigned long previousLogMillis;                         // Time measurement for serial logging
@@ -102,7 +102,7 @@ void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter b
   portENTER_CRITICAL_ISR(&mux);
   isrMillis = millis();
   isrFired = true;
-  counts++;
+  if (digitalRead(input_pin_geiger) == LOW) counts++;
   portEXIT_CRITICAL_ISR(&mux);
 }
 
