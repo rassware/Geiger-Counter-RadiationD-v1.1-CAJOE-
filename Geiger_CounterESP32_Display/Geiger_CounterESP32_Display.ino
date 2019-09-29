@@ -25,7 +25,6 @@
 
 #define LOG_PERIOD 60000                       // Logging period in milliseconds
 #define BT_LOG_PERIOD 1000                     // Bluetooth logging period in milliseconds
-#define DISPLAY_UPDATE_PERIOD 5000             // display update period in milliseconds
 #define MINUTE_PERIOD 60000                    // minute period
 #define TUBE_FACTOR_SIEVERT 0.00812037037037   // the factor for the J305ß tube
 #define LAST_VALUES_SIZE 5                     // size of the history array
@@ -90,6 +89,7 @@ unsigned long previousMillis;                            // Time measurement
 unsigned long previousLogMillis;                         // Time measurement for serial logging
 unsigned long previousDisplayUpdateMillis;               // Time measurement for last display update
 unsigned long lastCPMValues[LAST_VALUES_SIZE];           // last cpm values
+unsigned long displayUpdatePeriod = 1000;                // diplay update period
 bool debug = false;                                      // flag send debug info via Bluetooth
 bool monitoring = true;                                  // flag for connecting to WiFi
 bool writeToFile = false;                                // flag for writing to local file
@@ -103,6 +103,7 @@ void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter b
   isrMillis = millis();
   isrFired = true;
   if (digitalRead(input_pin_geiger) == LOW) counts++;
+  while (digitalRead(input_pin_geiger) == LOW) {}
   portEXIT_CRITICAL_ISR(&mux);
 }
 
@@ -140,6 +141,7 @@ void setup() {
       }
     });
     server.begin();
+    displayUpdatePeriod = 5000;
   }
   display.clear();
 
@@ -204,7 +206,7 @@ void loop() {
     if (writeToFile) appendToFile(cpm, mSvh);
   }
 
-  if (displayFlag && currentMillis - previousDisplayUpdateMillis > DISPLAY_UPDATE_PERIOD) {
+  if (displayFlag && currentMillis - previousDisplayUpdateMillis > displayUpdatePeriod) {
     previousDisplayUpdateMillis = millis();
     if (monitoring) {
       unsigned long cpm = 0;
@@ -229,9 +231,13 @@ void loop() {
       displayString(actualString, 0, 0, TEXT_ALIGN_LEFT);
       clearDisplayGently(40, 20);
       displayString(elapsed, 0, 20, TEXT_ALIGN_LEFT);
-      portENTER_CRITICAL(&mux);
-      counts = 0;
-      portEXIT_CRITICAL(&mux);
+      if (elapsedSeconds > 0) {
+        float clicksPerSecound = (float)counts / elapsedSeconds;
+        unsigned long cpm = clicksPerSecound * MINUTE_PERIOD / 1000;
+        String cpmString = String("cpm = ") + String(cpm);
+        clearDisplayGently(40, 40);
+        displayString(cpmString, 0, 40, TEXT_ALIGN_LEFT);
+      }
     }
   }
 }
@@ -535,7 +541,7 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
 void handleIndex() {
   unsigned long average = calcAverage();
   int elapsedSeconds = (millis() - previousMillis) / 1000;
-  String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>Geiger Counter</h1>";
+  String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
   output += "<h3>&#9762; Radioactivity &#9762;</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
   output += "<p>CPM average: " + String(average) + "</p>";
