@@ -80,8 +80,6 @@ WebServer server(80);
 SSD1306  display(0x3c, 5, 4);
 
 volatile unsigned long counts = 0;                       // Tube events
-volatile unsigned long isrMillis;                        // Time measurement for last ISR
-volatile bool isrFired = false;                          // flag for ISR
 
 const int input_pin_geiger = 26;                         // input pin for geiger board
 
@@ -98,12 +96,9 @@ const char* fileName = "/cpms.txt";                      // file name to write
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;         // sync variable
 
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
-  detachInterrupt(digitalPinToInterrupt(input_pin_geiger));
   portENTER_CRITICAL_ISR(&mux);
-  isrMillis = millis();
-  isrFired = true;
-  if (digitalRead(input_pin_geiger) == LOW) counts++;
-  while (digitalRead(input_pin_geiger) == LOW) {}
+  if (digitalRead(input_pin_geiger) == HIGH) counts++;
+  while (digitalRead(input_pin_geiger) == HIGH) {}
   portEXIT_CRITICAL_ISR(&mux);
 }
 
@@ -115,7 +110,7 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
 
   pinMode(input_pin_geiger, INPUT);                                                // Set pin for capturing Tube events
-  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);  // Define interrupt on falling edge
+  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, RISING);   // Define interrupt on falling edge
 
   debug = EEPROM.read(0);
   monitoring = EEPROM.read(1);
@@ -177,13 +172,6 @@ void loop() {
     snprintf(buf, sizeof buf, "counts since %d seconds: %lu, CPM: %lu, mSv/h: %f", elapsedSeconds, counts, cpm, mSvh);
     Serial.println(buf);
     SerialBT.println(buf);
-  }
-
-  if (isrFired && ( currentMillis - isrMillis) >= 100) {
-    portENTER_CRITICAL(&mux);
-    isrFired = false;
-    portEXIT_CRITICAL(&mux);
-    attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, FALLING);
   }
 
   if (monitoring && currentMillis - previousMillis > LOG_PERIOD) {
