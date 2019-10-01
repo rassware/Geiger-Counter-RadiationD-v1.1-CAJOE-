@@ -25,6 +25,7 @@
 
 #define LOG_PERIOD 60000                       // Logging period in milliseconds
 #define BT_LOG_PERIOD 1000                     // Bluetooth logging period in milliseconds
+#define APP_LOG_PERIOD 5000                    // App logging period in milliseconds
 #define MINUTE_PERIOD 60000                    // minute period
 #define TUBE_FACTOR_SIEVERT 0.00812037037037   // the factor for the J305ß tube
 #define LAST_VALUES_SIZE 5                     // size of the history array
@@ -85,8 +86,10 @@ const int input_pin_geiger = 26;                         // input pin for geiger
 
 unsigned long previousMillis;                            // Time measurement
 unsigned long previousLogMillis;                         // Time measurement for serial logging
+unsigned long previousAppLogMillis;                      // Time measurement for app logging
 unsigned long previousDisplayUpdateMillis;               // Time measurement for last display update
 unsigned long lastCPMValues[LAST_VALUES_SIZE];           // last cpm values
+unsigned long lastCPMForApp = 0;                         // last cpm for app
 unsigned long displayUpdatePeriod = 1000;                // diplay update period
 bool debug = false;                                      // flag send debug info via Bluetooth
 bool monitoring = true;                                  // flag for connecting to WiFi
@@ -98,6 +101,7 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;         // sync variable
 void IRAM_ATTR isr_impulse() { // Captures count of events from Geiger counter board
   portENTER_CRITICAL_ISR(&mux);
   if (digitalRead(input_pin_geiger) == HIGH) counts++;
+  SerialBT.println("t;");
   while (digitalRead(input_pin_geiger) == HIGH) {}
   portEXIT_CRITICAL_ISR(&mux);
 }
@@ -110,7 +114,7 @@ void setup() {
   EEPROM.begin(EEPROM_SIZE);
 
   pinMode(input_pin_geiger, INPUT);                                                // Set pin for capturing Tube events
-  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, RISING);   // Define interrupt on falling edge
+  attachInterrupt(digitalPinToInterrupt(input_pin_geiger), isr_impulse, RISING);   // Define interrupt on rising edge
 
   debug = EEPROM.read(0);
   monitoring = EEPROM.read(1);
@@ -174,8 +178,21 @@ void loop() {
     SerialBT.println(buf);
   }
 
+  // data for app
+  if (currentMillis - previousAppLogMillis > APP_LOG_PERIOD) {
+    previousAppLogMillis = currentMillis;
+    unsigned long cpm = ((float) counts / ((currentMillis - previousMillis) / 1000)) * 60;
+    lastCPMForApp = (lastCPMForApp + cpm) / 2;
+    float mSvh = lastCPMForApp * TUBE_FACTOR_SIEVERT;
+    SerialBT.print("cpm=");
+    SerialBT.print(lastCPMForApp, DEC);
+    SerialBT.print(";");
+    SerialBT.print("uSv/h=");
+    SerialBT.println(mSvh, 4);
+  }
+
   if (monitoring && currentMillis - previousMillis > LOG_PERIOD) {
-    if(displayFlag) displayString("»", 120, 40, TEXT_ALIGN_LEFT);
+    if (displayFlag) displayString("»", 120, 40, TEXT_ALIGN_LEFT);
     unsigned long cpm;
     float mSvh;
     previousMillis = currentMillis;
@@ -541,9 +558,9 @@ void handleIndex() {
   output += "</p>";
   output += "<h3>Mode</h3>";
   if (monitoring) {
-    output += "<p>Monitoring Mode</p>";  
+    output += "<p>Monitoring Mode</p>";
   } else {
-    output += "<p>Standalone Mode</p>";  
+    output += "<p>Standalone Mode</p>";
   }
   output += "<h3>CPU</h3>";
   output += "<p>Frequency: " + String(getCpuFrequencyMhz()) + " MHz</p>";
