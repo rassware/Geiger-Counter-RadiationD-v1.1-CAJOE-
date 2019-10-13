@@ -18,6 +18,8 @@
 #include <BluetoothSerial.h>
 #include <EEPROM.h>
 #include <WebServer.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 #include <SPIFFS.h>
 #include <esp32-hal-cpu.h>
 #include <SSD1306.h>
@@ -78,6 +80,8 @@ uint8_t temprature_sens_read();
 WiFiClient client;
 BluetoothSerial SerialBT;
 WebServer server(80);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "ptbtime1.ptb.de", 0, 120000);
 SSD1306  display(0x3c, 5, 4);
 
 volatile unsigned long counts = 0;                       // Tube events
@@ -130,6 +134,8 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED) {
       connectWifi();
     }
+    timeClient.begin();
+    timeClient.setTimeOffset(7200);
 
     server.on("/", HTTP_GET, handleIndex);
     server.on("/files", HTTP_GET, handleFileList);
@@ -142,7 +148,6 @@ void setup() {
     server.begin();
     displayUpdatePeriod = 5000;
   }
-  display.clear();
 
   if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) {
     Serial.println("SPIFFS Mount Failed");
@@ -156,6 +161,9 @@ void loop() {
   unsigned long currentMillis = millis();
 
   if (monitoring) {
+    while (!timeClient.update()) {
+      timeClient.forceUpdate();
+    }
     server.handleClient();
   }
 
@@ -228,6 +236,7 @@ void loop() {
       displayString(cpmString, 0, 20, TEXT_ALIGN_LEFT);
       clearDisplayGently(56, 40);
       displayString(mSvhString, 0, 40, TEXT_ALIGN_LEFT);
+      shouldTurnOffDisplay();
     } else {
       int elapsedSeconds = millis() / 1000;
       String actualString = String("actual = ") + counts;
@@ -278,6 +287,7 @@ void connectWifi() {
   display.clear();
   displayString("Connected!", 64, 15, TEXT_ALIGN_CENTER);
   delay(3000);
+  display.clear();
 }
 
 void handleCommands() {
@@ -547,7 +557,7 @@ void handleIndex() {
   unsigned long average = calcAverage();
   int elapsedSeconds = (millis() - previousMillis) / 1000;
   String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
-  output += "<h3>&#9762; Radioactivity &#9762;</h3>";
+  output += "<h3>Radioactivity</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
   output += "<p>CPM average: " + String(average) + "</p>";
   output += "<p>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</p>";
@@ -562,6 +572,8 @@ void handleIndex() {
   } else {
     output += "<p>Standalone Mode</p>";
   }
+  output += "<h3>Time</h3>";
+  output += "<p>" + String(timeClient.getFormattedTime()) + "</p>";
   output += "<h3>CPU</h3>";
   output += "<p>Frequency: " + String(getCpuFrequencyMhz()) + " MHz</p>";
   output += "<p>Temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</p>";
@@ -626,9 +638,9 @@ bool handleFileRead(String path) {
 void appendToFile(unsigned long cpm, float mSvh) {
   File file = SPIFFS.open(fileName, FILE_APPEND);
   if (!file) {
-    Serial.println("- failed to open file for writing");
-    SerialBT.println("- failed to open file for writing");
-    return;
+    file = SPIFFS.open(fileName, FILE_WRITE);
+    Serial.println("file created");
+    SerialBT.println("file created");
   }
   char buf[100];
   snprintf(buf, sizeof buf, "%lu,%lu,%f", millis(), cpm, mSvh);
@@ -660,4 +672,11 @@ void clearDisplayGently(int x, int y) {
   display.setColor(BLACK);
   display.fillRect(x, y, display.getWidth() - x, 16);
   display.display();
+}
+
+void shouldTurnOffDisplay() {
+  if (timeClient.getHours() >= 0 && timeClient.getHours() <= 6) {
+    display.displayOff();
+  }
+  display.displayOn();
 }
