@@ -18,8 +18,7 @@
 #include <BluetoothSerial.h>
 #include <EEPROM.h>
 #include <WebServer.h>
-#include <NTPClient.h>
-#include <WiFiUdp.h>
+#include <time.h>
 #include <SPIFFS.h>
 #include <esp32-hal-cpu.h>
 #include <SSD1306.h>
@@ -80,8 +79,6 @@ uint8_t temprature_sens_read();
 WiFiClient client;
 BluetoothSerial SerialBT;
 WebServer server(80);
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "ptbtime1.ptb.de", 0, 120000);
 SSD1306  display(0x3c, 5, 4);
 
 volatile unsigned long counts = 0;                       // Tube events
@@ -134,8 +131,13 @@ void setup() {
     while (WiFi.status() != WL_CONNECTED) {
       connectWifi();
     }
-    timeClient.begin();
-    timeClient.setTimeOffset(7200);
+    configTime(0, 0, "192.168.78.1", "pool.ntp.org");                             // Time server in Fritzbox
+    setenv("TZ", "CET-1CEST,M3.5.0/02:00:00,M10.5.0/03:00:00", 1);                // timezone MEZ
+    while (!time(nullptr)) {                                                      // wait for time
+      Serial.print("Wait for time: ");
+      Serial.print(".");
+      delay(500);
+    }
 
     server.on("/", HTTP_GET, handleIndex);
     server.on("/files", HTTP_GET, handleFileList);
@@ -161,9 +163,6 @@ void loop() {
   unsigned long currentMillis = millis();
 
   if (monitoring) {
-    while (!timeClient.update()) {
-      timeClient.forceUpdate();
-    }
     server.handleClient();
   }
 
@@ -556,6 +555,11 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
 void handleIndex() {
   unsigned long average = calcAverage();
   int elapsedSeconds = (millis() - previousMillis) / 1000;
+  time_t now = time(nullptr);
+  struct tm * timeinfo;
+  timeinfo = localtime(&now);
+  char time[100];
+  sprintf(time, "%02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
   String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
   output += "<h3>Radioactivity</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
@@ -573,7 +577,7 @@ void handleIndex() {
     output += "<p>Standalone Mode</p>";
   }
   output += "<h3>Time</h3>";
-  output += "<p>" + String(timeClient.getFormattedTime()) + "</p>";
+  output += "<p>" + String(time) + "</p>";
   output += "<h3>CPU</h3>";
   output += "<p>Frequency: " + String(getCpuFrequencyMhz()) + " MHz</p>";
   output += "<p>Temperature: " + String((temprature_sens_read() - 32) / 1.8) + " &deg;C</p>";
@@ -675,8 +679,11 @@ void clearDisplayGently(int x, int y) {
 }
 
 void shouldTurnOffDisplay() {
-  int hours = timeClient.getHours();
-  if (hours >= 0 && hours <= 6) {
+  time_t now = time(nullptr);
+  struct tm * timeinfo;
+  timeinfo = localtime(&now);
+  int hours = timeinfo->tm_hour;
+  if (hours >= 0 && hours <= 5) {
     display.displayOff();
     return;
   }
