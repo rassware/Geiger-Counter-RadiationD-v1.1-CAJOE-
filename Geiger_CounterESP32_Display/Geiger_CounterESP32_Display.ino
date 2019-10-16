@@ -675,8 +675,10 @@ void clearDisplayGently(int x, int y) {
 }
 
 void shouldTurnOffDisplay() {
-  if (timeClient.getHours() >= 0 && timeClient.getHours() <= 6) {
+  int hours = timeClient.getHours();
+  if (hours >= 0 && hours <= 6) {
     display.displayOff();
+    return;
   }
   display.displayOn();
 }
