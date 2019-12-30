@@ -33,6 +33,7 @@
 #define EEPROM_SIZE 5                          // size of the needed EEPROM
 #define STRING_BUFFER_SIZE 50                  // size of the handy stringbuffer
 #define FORMAT_SPIFFS_IF_FAILED false          // need to format only the first time
+#define WEIGHT_AVERAGE 0.8                     // value for the weighted average filter
 
 #ifndef CREDENTIALS
 
@@ -189,10 +190,11 @@ void loop() {
   if (currentMillis - previousAppLogMillis > APP_LOG_PERIOD) {
     previousAppLogMillis = currentMillis;
     unsigned long cpm = ((float) counts / ((currentMillis - previousMillis) / 1000)) * 60;
-    lastCPMForApp = (lastCPMForApp + cpm) / 2;
-    float mSvh = lastCPMForApp * TUBE_FACTOR_SIEVERT;
+    unsigned long average = calcWeightedAverageFilter(cpm, WEIGHT_AVERAGE, lastCPMForApp);
+    lastCPMForApp = cpm;
+    float mSvh = average * TUBE_FACTOR_SIEVERT;
     SerialBT.print("cpm=");
-    SerialBT.print(lastCPMForApp, DEC);
+    SerialBT.print(average, DEC);
     SerialBT.print(";");
     SerialBT.print("uSv/h=");
     SerialBT.println(mSvh, 4);
@@ -224,7 +226,7 @@ void loop() {
       unsigned long cpm = 0;
       float mSvh = 0;
       unsigned long average = 0;
-      average = calcAverage();
+      average = calcWeightedAverageFilter(lastCPMValues[0], WEIGHT_AVERAGE, lastCPMValues[1]);
       mSvh = average * TUBE_FACTOR_SIEVERT;
       String actualString = String("actual = ") + counts;
       String cpmString = String("Ø CPM = ") + average;
@@ -461,7 +463,7 @@ void printCPM(unsigned long cpm, float mSvh) {
 }
 
 void printAverage() {
-  unsigned long average = calcAverage();
+  unsigned long average = calcWeightedAverageFilter(lastCPMValues[0], WEIGHT_AVERAGE, lastCPMValues[1]);
   Serial.print("Radioactivity (CPM Average): ");
   Serial.println(average);
   Serial.print("Radioactivity (mSv/h Average): ");
@@ -472,7 +474,7 @@ void printAverage() {
   SerialBT.println(average * TUBE_FACTOR_SIEVERT);
 }
 
-unsigned long calcAverage() {
+unsigned long calcRunningAverage() {
   int countValues = 0;
   unsigned long sumValues = 0;
   for (int i = 0; i < LAST_VALUES_SIZE; i++) {
@@ -485,6 +487,13 @@ unsigned long calcAverage() {
   } else {
     return average = sumValues / countValues;
   }
+}
+
+// filter the current result using a weighted average filter:
+// weight must be between 0 and 1
+unsigned long calcWeightedAverageFilter(unsigned long rawValue, float weight, unsigned long lastValue) {
+  float result = weight * rawValue + (1.0-weight) * lastValue;
+  return result;
 }
 
 void IFTTT(int postValue, float postValue2) {
@@ -553,7 +562,7 @@ int trigger(const char* api_key, const char* ifttt_fingerprint, const char* even
 }
 
 void handleIndex() {
-  unsigned long average = calcAverage();
+  unsigned long average = calcWeightedAverageFilter(lastCPMValues[0], WEIGHT_AVERAGE, lastCPMValues[1]);
   int elapsedSeconds = (millis() - previousMillis) / 1000;
   time_t now = time(nullptr);
   struct tm * timeinfo;
