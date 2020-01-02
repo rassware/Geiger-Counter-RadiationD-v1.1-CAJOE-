@@ -14,7 +14,6 @@
 */
 
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <BluetoothSerial.h>
 #include <EEPROM.h>
 #include <WebServer.h>
@@ -55,9 +54,7 @@
 
 // IFTTT settings
 #define EVENT_NAME "Radioactivity"             // event name for IFTTT
-#define CPM_THRESHOLD 200                      // Threshold for IFTTT warning
-// fingerprint: openssl s_client -connect maker.ifttt.com:443  < /dev/null 2>/dev/null | openssl x509 -fingerprint -noout | cut -d'=' -f2
-#define DEFAULT_IFTTT_FINGERPRINT "AA:75:CB:41:2E:D5:F9:97:FF:5D:A0:8B:7D:AC:12:21:08:4B:00:8C"
+#define CPM_THRESHOLD 50                       // Threshold for IFTTT warning
 
 // ThingSpeak settings
 const int channelID = THINKSPEAK_CHANNEL;
@@ -496,13 +493,9 @@ unsigned long calcWeightedAverageFilter(unsigned long rawValue, float weight, un
   return result;
 }
 
-void IFTTT(int postValue, float postValue2) {
-  char postValueChar[8];
-  itoa(postValue, postValueChar, 10);
-  char postValue2Char[8];
-  dtostrf(postValue2, 6, 2, postValue2Char);
+void IFTTT(unsigned long postValue, float postValue2) {
   String msg;
-  if (trigger(IFTTT_KEY, DEFAULT_IFTTT_FINGERPRINT, EVENT_NAME, postValueChar, postValue2Char, NULL)) {
+  if (trigger(IFTTT_KEY, EVENT_NAME, postValue, postValue2)) {
     msg = "IFTTT failed!";
   } else {
     msg = "Successfully sent to IFTTT";
@@ -512,57 +505,43 @@ void IFTTT(int postValue, float postValue2) {
 }
 
 
-int trigger(const char* api_key, const char* ifttt_fingerprint, const char* event_name, const char* value1, const char* value2, const char* value3) {
-  HTTPClient http;
-  const char* ifttt_base = "https://maker.ifttt.com/trigger";
+int trigger(String api_key, String event_name, unsigned long value1, float value2) {
 
-  // Compute URL length
-  int url_length = 1 + strlen(ifttt_base) + strlen("/") + strlen(event_name) + strlen("/with/key/") + strlen(api_key);
-  char ifttt_url[url_length];
+  // Construct API request body
+  String body = "value1=";
+  body += String(value1);
+  body += "&value2=";
+  body += String(value2);
 
-  // Compute Payload length
-  int payload_length = 37 + (value1 ? strlen(value1) : 0) + (value2 ? strlen(value2) : 0) + (value3 ? strlen(value3) : 0);
-  char ifttt_payload[payload_length];
+  if (client.connect("maker.ifttt.com", 80)) {
 
-  // Compute URL
-  snprintf(ifttt_url, url_length, "%s/%s/with/key/%s", ifttt_base, event_name, api_key);
+    client.print("POST /trigger/");
+    client.print(event_name);
+    client.print("/with/key/");
+    client.print(api_key);
+    client.println(" HTTP/1.1");
+    client.println("Host: maker.ifttt.com");
+    client.println("Connection: close");
+    
+    client.println("Content-Type: application/x-www-form-urlencoded");
+    client.print("Content-Length: ");
+    client.println(body.length());
+    
+    client.println();
+    client.println(body);
+    client.println();
 
-  // Compute Payload (JSON), e.g. {value1:"A",value2:"B",value3:"C"}
-  snprintf(ifttt_payload, payload_length, "{");
-
-  if (value1) {
-    strcat(ifttt_payload, "\"value1\":\"");
-    strcat(ifttt_payload, value1);
-    strcat(ifttt_payload, "\"");
-    if (value2 || value3) {
-      strcat(ifttt_payload, ",");
-    }
+    String line = client.readStringUntil('\r');
+    Serial.println(line);
+    SerialBT.println(line);
   }
-  if (value2) {
-    strcat(ifttt_payload, "\"value2\":\"");
-    strcat(ifttt_payload, value2);
-    strcat(ifttt_payload, "\"");
-    if (value3) {
-      strcat(ifttt_payload, ",");
-    }
-  }
-  if (value3) {
-    strcat(ifttt_payload, "\"value3\":\"");
-    strcat(ifttt_payload, value3);
-    strcat(ifttt_payload, "\"");
-  }
-  strcat(ifttt_payload, "}");
-
-  http.begin(ifttt_url, ifttt_fingerprint);
-  http.addHeader("Content-Type", "application/json");
-  int httpCode = http.POST(ifttt_payload);
-  http.end();
-
-  return httpCode != HTTP_CODE_OK;
+  client.stop();
+  return 0;
 }
 
 void handleIndex() {
   unsigned long average = calcWeightedAverageFilter(lastCPMValues[0], WEIGHT_AVERAGE, lastCPMValues[1]);
+  unsigned long averageRunning = calcRunningAverage();
   int elapsedSeconds = (millis() - previousMillis) / 1000;
   time_t now = time(nullptr);
   struct tm * timeinfo;
@@ -573,6 +552,7 @@ void handleIndex() {
   output += "<h3>Radioactivity</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
   output += "<p>CPM average: " + String(average) + "</p>";
+  output += "<p>CPM average (running): " + String(averageRunning) + "</p>";
   output += "<p>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</p>";
   output += "<p>Last CPMs: " + String(lastCPMValues[0]);
   for (int i = 1; i < LAST_VALUES_SIZE; i++) {
