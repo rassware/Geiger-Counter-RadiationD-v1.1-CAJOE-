@@ -198,7 +198,7 @@ void loop() {
   }
 
   if (monitoring && currentMillis - previousMillis > LOG_PERIOD) {
-    if (displayFlag) displayString("»", 120, 40, TEXT_ALIGN_LEFT);
+    if (displayFlag) displayString("@", 110, 40, TEXT_ALIGN_LEFT);
     unsigned long cpm;
     float mSvh;
     previousMillis = currentMillis;
@@ -213,7 +213,7 @@ void loop() {
     printTemperature();
     printHallValue();
     postThingspeak(cpm, mSvh);
-    if (cpm > CPM_THRESHOLD ) IFTTT(cpm, mSvh);
+    if (cpm > CPM_THRESHOLD ) postIFTTT(cpm, mSvh);
     if (writeToFile) appendToFile(cpm, mSvh);
   }
 
@@ -489,44 +489,33 @@ unsigned long calcRunningAverage() {
 // filter the current result using a weighted average filter:
 // weight must be between 0 and 1
 unsigned long calcWeightedAverageFilter(unsigned long rawValue, float weight, unsigned long lastValue) {
-  float result = weight * rawValue + (1.0-weight) * lastValue;
+  float result = weight * rawValue + (1.0 - weight) * lastValue;
   return result;
 }
 
-void IFTTT(unsigned long postValue, float postValue2) {
+void postIFTTT(unsigned long postValue, float postValue2) {
   String msg;
-  if (trigger(IFTTT_KEY, EVENT_NAME, postValue, postValue2)) {
-    msg = "IFTTT failed!";
-  } else {
-    msg = "Successfully sent to IFTTT";
-  }
-  Serial.println(msg);
-  SerialBT.println(msg);
-}
-
-
-int trigger(String api_key, String event_name, unsigned long value1, float value2) {
 
   // Construct API request body
   String body = "value1=";
-  body += String(value1);
+  body += String(postValue);
   body += "&value2=";
-  body += String(value2);
+  body += String(postValue2);
 
   if (client.connect("maker.ifttt.com", 80)) {
 
     client.print("POST /trigger/");
-    client.print(event_name);
+    client.print(EVENT_NAME);
     client.print("/with/key/");
-    client.print(api_key);
+    client.print(IFTTT_KEY);
     client.println(" HTTP/1.1");
     client.println("Host: maker.ifttt.com");
     client.println("Connection: close");
-    
+
     client.println("Content-Type: application/x-www-form-urlencoded");
     client.print("Content-Length: ");
     client.println(body.length());
-    
+
     client.println();
     client.println(body);
     client.println();
@@ -534,9 +523,15 @@ int trigger(String api_key, String event_name, unsigned long value1, float value
     String line = client.readStringUntil('\r');
     Serial.println(line);
     SerialBT.println(line);
+
+    msg = "Successfully sent to IFTTT";
+  } else {
+    msg = "IFTTT failed!";
   }
   client.stop();
-  return 0;
+
+  Serial.println(msg);
+  SerialBT.println(msg);
 }
 
 void handleIndex() {
@@ -548,7 +543,7 @@ void handleIndex() {
   timeinfo = localtime(&now);
   char time[100];
   sprintf(time, "%02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
-  String output = "<html><head><title>GeigerCounter</title></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
+  String output = "<html><head><title>GeigerCounter</title><meta http-equiv='refresh' content='10'></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
   output += "<h3>Radioactivity</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
   output += "<p>CPM average: " + String(average) + "</p>";
@@ -663,7 +658,7 @@ void displayString(String dispString, int x, int y, OLEDDISPLAY_TEXT_ALIGNMENT a
 
 void clearDisplayGently(int x, int y) {
   display.setColor(BLACK);
-  display.fillRect(x, y, display.getWidth() - x, 16);
+  display.fillRect(x, y, display.getWidth() - x, 20);
   display.display();
 }
 
