@@ -542,13 +542,15 @@ void handleIndex() {
   struct tm * timeinfo;
   timeinfo = localtime(&now);
   char time[100];
+  char usvh[10];
+  dtostrf(average * TUBE_FACTOR_SIEVERT,7,4,usvh);
   sprintf(time, "%02d:%02d:%02d", timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
   String output = "<html><head><title>GeigerCounter</title><meta http-equiv='refresh' content='10'></head><body style='text-align: center;font-family: verdana;'><h1>&#9762; Geiger Counter &#9762;</h1>";
   output += "<h3>Radioactivity</h3>";
   output += "<p>Counts since " + String(elapsedSeconds) + " seconds: " + String(counts) + "</p>";
   output += "<p>CPM average: " + String(average) + "</p>";
   output += "<p>CPM average (running): " + String(averageRunning) + "</p>";
-  output += "<p>&micro;Sv/h average: " + String(average * TUBE_FACTOR_SIEVERT) + "</p>";
+  output += "<p>&micro;Sv/h average: " + String(usvh) + "</p>";
   output += "<p>Last CPMs: " + String(lastCPMValues[0]);
   for (int i = 1; i < LAST_VALUES_SIZE; i++) {
     output += ", " + String(lastCPMValues[i]);
