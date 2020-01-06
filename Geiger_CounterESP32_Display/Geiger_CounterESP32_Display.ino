@@ -224,10 +224,11 @@ void loop() {
       float mSvh = 0;
       unsigned long average = 0;
       average = calcWeightedAverageFilter(lastCPMValues[0], WEIGHT_AVERAGE, lastCPMValues[1]);
-      mSvh = average * TUBE_FACTOR_SIEVERT;
+      char usvh[10];
+      dtostrf(average * TUBE_FACTOR_SIEVERT,7,3,usvh);
       String actualString = String("actual = ") + counts;
       String cpmString = String("Ø CPM = ") + average;
-      String mSvhString = String("µSv/h = ") + mSvh;
+      String mSvhString = String("µSv/h = ") + usvh;
       clearDisplayGently(60, 0);
       displayString(actualString, 0, 0, TEXT_ALIGN_LEFT);
       clearDisplayGently(64, 20);
